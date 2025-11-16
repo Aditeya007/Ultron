@@ -1,152 +1,281 @@
+import os
+import json
 import subprocess
 import webbrowser
-import json
-import os
-from pathlib import Path
+import shlex
+import time
 from dotenv import load_dotenv
 from openai import OpenAI
+from pathlib import Path
 
-# --------------------------------------------
-# Load API key
-# --------------------------------------------
+# ===============================================
+# CONFIG
+# ===============================================
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-client = OpenAI(
-    api_key=GROQ_API_KEY,
-    base_url="https://api.groq.com/openai/v1"
-)
-
+client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 MODEL = "llama-3.3-70b-versatile"
 
-# --------------------------------------------
-# DIRECT WEBSITE SEARCH PATTERNS
-# --------------------------------------------
+USER_HOME = r"C:\Users\Abcom"
+APP_INDEX_FILE = "app_index.json"
+
 SEARCH_PATTERNS = {
+    "youtube.com": "https://www.youtube.com/results?search_query=",
     "amazon.com": "https://www.amazon.com/s?k=",
     "amazon.in": "https://www.amazon.in/s?k=",
     "flipkart.com": "https://www.flipkart.com/search?q=",
     "imdb.com": "https://www.imdb.com/find?q=",
     "wikipedia.org": "https://en.wikipedia.org/w/index.php?search=",
     "reddit.com": "https://www.reddit.com/search/?q=",
-    "youtube.com": "https://www.youtube.com/results?search_query=",
 }
 
-# --------------------------------------------
-# UNIVERSAL FULL-PC APP SCANNER
-# --------------------------------------------
+SCAN_PATHS = [
+    r"C:\Program Files",
+    r"C:\Program Files (x86)",
+    os.path.join(USER_HOME, "AppData", "Local", "Programs"),
+    os.path.join(USER_HOME, "AppData", "Local"),
+    os.path.join(USER_HOME, "AppData", "Roaming"),
+    os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"),
+                 "Microsoft", "Windows", "Start Menu", "Programs"),
+    r"C:\Program Files (x86)\Steam\steamapps\common"
+]
 
-APP_INDEX_FILE = "app_index.json"
+INSTALLER_KEYWORDS = ["installer", "setup", "uninstall", "update", "patch"]
 
-def get_all_drives():
-    drives = []
-    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
-        if os.path.exists(f"{letter}:/"):
-            drives.append(f"{letter}:/")
-    return drives
+PRIORITY_PREFIXES = [
+    r"C:\Program Files",
+    r"C:\Program Files (x86)",
+    os.path.join(USER_HOME, "AppData", "Local", "Programs"),
+    os.path.join(USER_HOME, "AppData", "Roaming"),
+]
 
-def scan_drive_for_exe(drive_path, app_map):
-    print(f"🔍 Scanning drive {drive_path} ... (may take time)")
-    for root, dirs, files in os.walk(drive_path, topdown=True):
-        # optional performance skip
-        if "\\Windows" in root or "\\ProgramData" in root:
+
+# ===============================================
+# JSON CLEANER + NORMALIZER
+# ===============================================
+
+def clean_json(raw):
+    if not raw:
+        return raw
+
+    raw = raw.strip()
+
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        raw = raw.replace("json", "", 1).replace("JSON", "", 1).strip()
+
+    raw = raw.replace("```", "").strip()
+    return raw
+
+
+def normalize(obj):
+    if not obj:
+        return {}
+
+    return {
+        "action": obj.get("action"),
+        "app": obj.get("app") or obj.get("app_name") or obj.get("application"),
+        "url": obj.get("url") or obj.get("website") or obj.get("link"),
+        "site": obj.get("site") or obj.get("domain"),
+        "query": obj.get("query") or obj.get("search_query"),
+    }
+
+
+# ===============================================
+# INDEX BUILDER
+# ===============================================
+
+def should_skip(name, full):
+    name = name.lower()
+    full = full.lower()
+    if any(k in name for k in INSTALLER_KEYWORDS):
+        return True
+    if "downloads" in full:
+        return True
+    return False
+
+
+def priority_score(path):
+    score = 0
+    lp = path.lower()
+    for i, prefix in enumerate(PRIORITY_PREFIXES):
+        if lp.startswith(prefix.lower()):
+            score += (len(PRIORITY_PREFIXES) - i) * 10
+    if "steamapps" in lp:
+        score += 20
+    return score
+
+
+def scan_paths():
+    apps = {}
+    start = time.time()
+
+    for base in SCAN_PATHS:
+        if not os.path.exists(base):
             continue
 
-        for file in files:
-            if file.endswith(".exe"):
-                clean_name = file.replace(".exe", "").lower().strip()
-                full_path = os.path.join(root, file)
-                app_map[clean_name] = full_path
+        for root, dirs, files in os.walk(base):
+            for f in files:
+                if not f.lower().endswith(".exe"):
+                    continue
 
-    return app_map
+                name = f[:-4].lower()
+                full = os.path.join(root, f)
 
-def build_app_index():
-    print("🔍 Full system scan started — scanning ALL drives for .exe files...")
-    app_map = {}
+                if should_skip(name, full):
+                    continue
 
-    drives = get_all_drives()
-    for drive in drives:
-        scan_drive_for_exe(drive, app_map)
+                if name not in apps:
+                    apps[name] = full
+                else:
+                    if priority_score(full) > priority_score(apps[name]):
+                        apps[name] = full
 
-    with open(APP_INDEX_FILE, "w") as f:
-        json.dump(app_map, f, indent=2)
+    print(f"Indexed {len(apps)} apps in {time.time() - start:.1f}s")
+    return apps
 
-    print(f"✅ App index built — {len(app_map)} apps found.")
-    return app_map
 
 def load_app_index():
     if os.path.exists(APP_INDEX_FILE):
-        print("📂 Loading existing app index...")
-        with open(APP_INDEX_FILE, "r") as f:
-            return json.load(f)
-    else:
-        print("⚠ No index file found. Starting full scan.")
-        return build_app_index()
+        with open(APP_INDEX_FILE, "r", encoding="utf-8") as f:
+            apps = json.load(f)
+            print(f"Loaded {len(apps)} apps from index.")
+            return apps
+
+    print("Building index...")
+    apps = scan_paths()
+    with open(APP_INDEX_FILE, "w", encoding="utf-8") as f:
+        json.dump(apps, f, indent=2)
+    return apps
+
 
 APP_INDEX = load_app_index()
 
-# --------------------------------------------
-# UNIVERSAL APP OPENER
-# --------------------------------------------
-def open_app(app_name):
-    name = app_name.lower().strip()
 
-    # exact match
+# ===============================================
+# APP LAUNCHING
+# ===============================================
+
+def try_launch(path):
+    try:
+        subprocess.Popen(shlex.split(f'"{path}"'))
+        return True
+    except:
+        try:
+            os.startfile(path)
+            return True
+        except:
+            return False
+
+
+def launch_uwp(name):
+    name = name.lower()
+
+    if name in ("calculator", "calc"):
+        try:
+            subprocess.Popen("calc.exe")
+            return True
+        except:
+            pass
+
+        try:
+            subprocess.Popen(shlex.split(
+                'explorer.exe shell:Appsfolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App'))
+            return True
+        except:
+            pass
+
+    return False
+
+
+# ⭐ FINAL FIXED APP OPENER
+def open_app(name):
+    name = name.lower().strip()
+    tokens = name.split()
+
+    # exact
     if name in APP_INDEX:
-        print("Opening:", APP_INDEX[name])
-        subprocess.Popen(APP_INDEX[name])
-        return
-
-    # fuzzy match
-    for key in APP_INDEX:
-        if name in key:
-            print("Opening:", APP_INDEX[key])
-            subprocess.Popen(APP_INDEX[key])
+        if try_launch(APP_INDEX[name]):
             return
 
-    print("❌ App not found:", app_name)
+    candidates = []
+    for key, path in APP_INDEX.items():
+        key_lower = key.lower()
+        score = 0
 
-# --------------------------------------------
-# WEBSITE & SEARCH FUNCTIONS
-# --------------------------------------------
+        if key_lower == name:
+            score += 200
+
+        if key_lower.startswith(tokens[0]):
+            score += 150
+
+        for t in tokens:
+            if t in key_lower:
+                score += 60
+
+        if name.replace(" ", "") in key_lower.replace(" ", ""):
+            score += 100
+
+        if all(t in key_lower for t in tokens):
+            score += 200
+
+        score += priority_score(path)
+
+        if score > 0:
+            candidates.append((score, key, path))
+
+    candidates.sort(reverse=True)
+
+    for score, k, path in candidates[:5]:
+        print(f"Trying: {k} -> {path}")
+        if try_launch(path):
+            return
+
+    if launch_uwp(name):
+        return
+
+    print("❌ App not found:", name)
+
+
+# ===============================================
+# WEB ACTIONS
+# ===============================================
+
 def open_website(url):
-    print("Opening website:", url)
-    webbrowser.open(url)
+    if url:
+        webbrowser.open(url)
+    else:
+        print("❌ No URL provided")
 
-def google_search(query):
-    url = "https://www.google.com/search?q=" + query.replace(" ", "+")
-    print("Google search:", query)
-    webbrowser.open(url)
+def google_search(q):
+    webbrowser.open("https://www.google.com/search?q=" + q.replace(" ", "+"))
 
-def youtube_search(query):
-    url = "https://www.youtube.com/results?search_query=" + query.replace(" ", "+")
-    print("YouTube search:", query)
-    webbrowser.open(url)
+def youtube_search(q):
+    webbrowser.open("https://www.youtube.com/results?search_query=" + q.replace(" ", "+"))
 
-def google_search_on_site(site, query):
-    clean = site.replace("https://", "").replace("http://", "").replace("www.", "")
-    url = f"https://www.google.com/search?q={query.replace(' ', '+')}+site:{clean}"
-    print(f"Google search on {clean}: {query}")
-    webbrowser.open(url)
+def google_site_search(site, q):
+    clean = site.replace("www.", "")
+    webbrowser.open(f"https://www.google.com/search?q={q.replace(' ', '+')}+site:{clean}")
 
-def direct_site_search(site, query):
-    clean = site.replace("https://", "").replace("http://", "").replace("www.", "")
+def direct_site_search(site, q):
+    clean = site.replace("www.", "")
 
     if clean in SEARCH_PATTERNS:
-        url = SEARCH_PATTERNS[clean] + query.replace(" ", "+")
+        url = SEARCH_PATTERNS[clean] + q.replace(" ", "+")
     else:
-        url = f"https://www.google.com/search?q={query.replace(' ', '+')}+site:{clean}"
+        url = f"https://www.google.com/search?q={q.replace(' ','+')}+site:{clean}"
 
-    print(f"Direct search on {clean}: {query}")
     webbrowser.open(url)
 
-# --------------------------------------------
-# LLM PARSING LOGIC
-# --------------------------------------------
-def ask_llm_for_action(user_input):
-    prompt = """
-Convert the user's request into a JSON action.
-Output ONLY JSON. No explanations.
+
+# ===============================================
+# LLM PARSER (FINAL + STABLE)
+# ===============================================
+
+def ask_llm(text):
+    prompt = f"""
+Return ONLY valid JSON. No code blocks. No ```json. No markdown.
 
 Allowed actions:
 - open_app
@@ -156,101 +285,75 @@ Allowed actions:
 - google_search_on_site
 - direct_site_search
 
-Rules:
-- If user says "open X.com and search Y" → direct_site_search
-- Unknown sites → google_search_on_site
-- Never output extra text.
-
-Examples:
-
-User: open youtube
-{{"action": "open_website", "url": "https://youtube.com"}}
-
-User: google best budget phones
-{{"action": "google_search", "query": "best budget phones"}}
-
-User: search Iron Man trailer on youtube
-{{"action": "youtube_search", "query": "Iron Man trailer"}}
-
-User: open amazon.com and search vr headset
-{{"action": "direct_site_search", "site": "amazon.com", "query": "vr headset"}}
-
-User command:
+User request: {text}
 """
-    prompt += user_input
 
-    response = client.chat.completions.create(
+    res = client.chat.completions.create(
         model=MODEL,
         messages=[{"role": "user", "content": prompt}]
     )
 
-    raw = response.choices[0].message.content
+    raw = res.choices[0].message.content
     print("\nLLM RAW:", raw)
 
+    raw = clean_json(raw)
+
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
     except:
-        print("❌ JSON Parse Error")
-        return None
+        print("❌ JSON parse failed")
+        return {}
 
-# --------------------------------------------
+    return normalize(parsed)
+
+
+# ===============================================
 # EXECUTOR
-# --------------------------------------------
-def execute_action(data):
-    if not data:
-        return
+# ===============================================
 
+def execute(data):
     action = data.get("action")
 
-    # Accept both "app" and "app_name"
-    app_value = data.get("app") or data.get("app_name")
-
     if action == "open_app":
-        if app_value:
-            open_app(app_value)
-        else:
-            print("❌ LLM did not provide app name.")
-        return
+        return open_app(data.get("app"))
 
     if action == "open_website":
-        open_website(data.get("url"))
-        return
+        return open_website(data.get("url"))
 
     if action == "google_search":
-        google_search(data.get("query"))
-        return
+        return google_search(data.get("query"))
 
     if action == "youtube_search":
-        youtube_search(data.get("query"))
-        return
+        return youtube_search(data.get("query"))
 
     if action == "google_search_on_site":
-        google_search_on_site(data.get("site"), data.get("query"))
-        return
+        return google_site_search(data.get("site"), data.get("query"))
 
     if action == "direct_site_search":
-        direct_site_search(data.get("site"), data.get("query"))
-        return
+        return direct_site_search(data.get("site"), data.get("query"))
 
     print("❌ Unknown action:", action)
 
-# --------------------------------------------
+
+# ===============================================
 # MAIN LOOP
-# --------------------------------------------
+# ===============================================
+
 def main():
     print("\n==============================")
-    print("      AI Desktop Assistant")
+    print("   AI Desktop Assistant")
     print("==============================")
 
     while True:
-        user_input = input("\nYou: ")
+        q = input("\nYou: ").strip()
 
-        if user_input.lower() in ["exit", "quit", "bye"]:
-            print("Assistant shutting down…")
+        if q.lower() in ("exit", "quit", "bye"):
+            print("Shutting down…")
             break
 
-        parsed = ask_llm_for_action(user_input)
-        execute_action(parsed)
+        data = ask_llm(q)
+        execute(data)
+
 
 if __name__ == "__main__":
     main()
