@@ -1,359 +1,247 @@
-import os
-import json
 import subprocess
 import webbrowser
-import shlex
-import time
+import json
+import os
+import difflib
 from dotenv import load_dotenv
 from openai import OpenAI
-from pathlib import Path
 
-# ===============================================
-# CONFIG
-# ===============================================
+# Load API key
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+client = OpenAI(
+    api_key=GROQ_API_KEY,
+    base_url="https://api.groq.com/openai/v1"
+)
+
 MODEL = "llama-3.3-70b-versatile"
 
-USER_HOME = r"C:\Users\Abcom"
-APP_INDEX_FILE = "app_index.json"
+# ============================================================
+# 🔧 CONFIGURATION: CUSTOM APPS & PATHS
+# ============================================================
+# Add your games or specific apps here if the scanner misses them.
+# Use double backslashes "\\" for paths.
 
-SEARCH_PATTERNS = {
-    "youtube.com": "https://www.youtube.com/results?search_query=",
-    "amazon.com": "https://www.amazon.com/s?k=",
-    "amazon.in": "https://www.amazon.in/s?k=",
-    "flipkart.com": "https://www.flipkart.com/search?q=",
-    "imdb.com": "https://www.imdb.com/find?q=",
-    "wikipedia.org": "https://en.wikipedia.org/w/index.php?search=",
-    "reddit.com": "https://www.reddit.com/search/?q=",
+MY_CUSTOM_APPS = {
+    # Examples (You can add your own here):
+    "marvel rivals": r"C:\Program Files (x86)\Steam\steamapps\common\MarvelRivals\Launcher.exe",
+    "valorant": r"C:\Riot Games\Riot Client\RiotClientServices.exe",
+    "obs": r"C:\Program Files\obs-studio\bin\64bit\obs64.exe",
 }
 
-SCAN_PATHS = [
-    r"C:\Program Files",
-    r"C:\Program Files (x86)",
-    os.path.join(USER_HOME, "AppData", "Local", "Programs"),
-    os.path.join(USER_HOME, "AppData", "Local"),
-    os.path.join(USER_HOME, "AppData", "Roaming"),
-    os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"),
-                 "Microsoft", "Windows", "Start Menu", "Programs"),
-    r"C:\Program Files (x86)\Steam\steamapps\common"
-]
+APP_INDEX_FILE = "app_database.json"
 
-INSTALLER_KEYWORDS = ["installer", "setup", "uninstall", "update", "patch"]
+# ============================================================
+# 🔍 INDEXING ENGINE (Runs once, then loads from file)
+# ============================================================
 
-PRIORITY_PREFIXES = [
-    r"C:\Program Files",
-    r"C:\Program Files (x86)",
-    os.path.join(USER_HOME, "AppData", "Local", "Programs"),
-    os.path.join(USER_HOME, "AppData", "Roaming"),
-]
+def build_app_index():
+    print("\n⚡ STARTING FULL SYSTEM SCAN (This happens once)...")
+    print("   Please wait, looking for apps and games...")
+    
+    app_map = {}
 
+    # 1. ADD CUSTOM APPS (Highest Priority)
+    app_map.update(MY_CUSTOM_APPS)
 
-# ===============================================
-# JSON CLEANER + NORMALIZER
-# ===============================================
-
-def clean_json(raw):
-    if not raw:
-        return raw
-
-    raw = raw.strip()
-
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        raw = raw.replace("json", "", 1).replace("JSON", "", 1).strip()
-
-    raw = raw.replace("```", "").strip()
-    return raw
-
-
-def normalize(obj):
-    if not obj:
-        return {}
-
-    return {
-        "action": obj.get("action"),
-        "app": obj.get("app") or obj.get("app_name") or obj.get("application"),
-        "url": obj.get("url") or obj.get("website") or obj.get("link"),
-        "site": obj.get("site") or obj.get("domain"),
-        "query": obj.get("query") or obj.get("search_query"),
+    # 2. ADD SYSTEM COMMANDS (Windows defaults)
+    # These fix the "Open Calculator" or "Open Notepad" issues.
+    system_commands = {
+        "calculator": "calc", "calc": "calc",
+        "notepad": "notepad", "paint": "mspaint",
+        "cmd": "cmd", "terminal": "wt",
+        "powershell": "powershell", "explorer": "explorer",
+        "task manager": "taskmgr", "control panel": "control",
+        "settings": "ms-settings:", "camera": "microsoft.windows.camera:",
+        "photos": "ms-photos:"
     }
+    app_map.update(system_commands)
 
+    # 3. SCAN START MENU & DESKTOP (Shortcuts are the most reliable)
+    shortcut_dirs = [
+        os.path.join(os.getenv("APPDATA"), r"Microsoft\Windows\Start Menu"),
+        os.path.join(os.getenv("ProgramData"), r"Microsoft\Windows\Start Menu"),
+        os.path.join(os.getenv("USERPROFILE"), "Desktop"),
+        os.path.join(os.getenv("PUBLIC"), "Desktop"),
+    ]
 
-# ===============================================
-# INDEX BUILDER
-# ===============================================
+    print("   - Scanning Shortcuts...")
+    for folder in shortcut_dirs:
+        if os.path.exists(folder):
+            for root, dirs, files in os.walk(folder):
+                for file in files:
+                    if file.lower().endswith((".lnk", ".url")):
+                        name = file.rsplit(".", 1)[0].lower()
+                        app_map[name] = os.path.join(root, file)
 
-def should_skip(name, full):
-    name = name.lower()
-    full = full.lower()
-    if any(k in name for k in INSTALLER_KEYWORDS):
-        return True
-    if "downloads" in full:
-        return True
-    return False
+    # 4. DEEP SCAN PROGRAM FILES (Finds installed .exe directly)
+    print("   - Scanning Program Files (Deep Search)...")
+    
+    search_roots = [
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        # os.path.join(os.environ.get("SystemDrive"), "Games") # Optional: Add if you have a Games folder
+    ]
 
+    skip_keywords = ["uninstall", "setup", "update", "helper", "crash", "installer", "framework", "service", "system32"]
 
-def priority_score(path):
-    score = 0
-    lp = path.lower()
-    for i, prefix in enumerate(PRIORITY_PREFIXES):
-        if lp.startswith(prefix.lower()):
-            score += (len(PRIORITY_PREFIXES) - i) * 10
-    if "steamapps" in lp:
-        score += 20
-    return score
+    for root_dir in search_roots:
+        if not root_dir or not os.path.exists(root_dir): continue
+        
+        for root, dirs, files in os.walk(root_dir):
+            # Optimization: Skip huge system folders to speed up scan
+            if "Windows" in root or "Common Files" in root: 
+                continue
+                
+            for file in files:
+                if file.lower().endswith(".exe"):
+                    name = file.lower().replace(".exe", "")
+                    
+                    # Filter out junk EXEs
+                    if any(bad in name for bad in skip_keywords): continue
+                    
+                    # Only add if not already found (Shortcuts take priority)
+                    if name not in app_map:
+                        app_map[name] = os.path.join(root, file)
 
+    # Save to JSON file
+    print(f"   - Saving database to {APP_INDEX_FILE}...")
+    with open(APP_INDEX_FILE, "w") as f:
+        json.dump(app_map, f, indent=2)
 
-def scan_paths():
-    apps = {}
-    start = time.time()
-
-    for base in SCAN_PATHS:
-        if not os.path.exists(base):
-            continue
-
-        for root, dirs, files in os.walk(base):
-            for f in files:
-                if not f.lower().endswith(".exe"):
-                    continue
-
-                name = f[:-4].lower()
-                full = os.path.join(root, f)
-
-                if should_skip(name, full):
-                    continue
-
-                if name not in apps:
-                    apps[name] = full
-                else:
-                    if priority_score(full) > priority_score(apps[name]):
-                        apps[name] = full
-
-    print(f"Indexed {len(apps)} apps in {time.time() - start:.1f}s")
-    return apps
-
+    print(f"✅ Scan Complete! Found {len(app_map)} apps.")
+    return app_map
 
 def load_app_index():
+    # If the file exists, load it instantly (No scanning!)
     if os.path.exists(APP_INDEX_FILE):
-        with open(APP_INDEX_FILE, "r", encoding="utf-8") as f:
-            apps = json.load(f)
-            print(f"Loaded {len(apps)} apps from index.")
-            return apps
+        try:
+            print("📂 Loading app database...")
+            with open(APP_INDEX_FILE, "r") as f:
+                data = json.load(f)
+                print(f"✅ Loaded {len(data)} apps from cache.")
+                return data
+        except:
+            print("⚠️ Database corrupt. Rebuilding...")
+    
+    # If file doesn't exist, build it
+    return build_app_index()
 
-    print("Building index...")
-    apps = scan_paths()
-    with open(APP_INDEX_FILE, "w", encoding="utf-8") as f:
-        json.dump(apps, f, indent=2)
-    return apps
-
-
+# Load index on startup
 APP_INDEX = load_app_index()
 
+# ============================================================
+# 🚀 EXECUTION & AI
+# ============================================================
 
-# ===============================================
-# APP LAUNCHING
-# ===============================================
+def open_app(app_name):
+    if not app_name: return
+    query = app_name.lower().strip()
 
-def try_launch(path):
-    try:
-        subprocess.Popen(shlex.split(f'"{path}"'))
-        return True
-    except:
-        try:
-            os.startfile(path)
-            return True
-        except:
-            return False
-
-
-def launch_uwp(name):
-    name = name.lower()
-
-    if name in ("calculator", "calc"):
-        try:
-            subprocess.Popen("calc.exe")
-            return True
-        except:
-            pass
-
-        try:
-            subprocess.Popen(shlex.split(
-                'explorer.exe shell:Appsfolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App'))
-            return True
-        except:
-            pass
-
-    return False
-
-
-# ⭐ FINAL FIXED APP OPENER
-def open_app(name):
-    name = name.lower().strip()
-    tokens = name.split()
-
-    # exact
-    if name in APP_INDEX:
-        if try_launch(APP_INDEX[name]):
-            return
-
-    candidates = []
-    for key, path in APP_INDEX.items():
-        key_lower = key.lower()
-        score = 0
-
-        if key_lower == name:
-            score += 200
-
-        if key_lower.startswith(tokens[0]):
-            score += 150
-
-        for t in tokens:
-            if t in key_lower:
-                score += 60
-
-        if name.replace(" ", "") in key_lower.replace(" ", ""):
-            score += 100
-
-        if all(t in key_lower for t in tokens):
-            score += 200
-
-        score += priority_score(path)
-
-        if score > 0:
-            candidates.append((score, key, path))
-
-    candidates.sort(reverse=True)
-
-    for score, k, path in candidates[:5]:
-        print(f"Trying: {k} -> {path}")
-        if try_launch(path):
-            return
-
-    if launch_uwp(name):
+    # 1. Exact Match
+    if query in APP_INDEX:
+        print(f"🚀 Opening: {query}")
+        try: os.startfile(APP_INDEX[query])
+        except Exception as e: print(f"❌ Failed to open: {e}")
         return
 
-    print("❌ App not found:", name)
+    # 2. Fuzzy Match (Smart Guess)
+    matches = difflib.get_close_matches(query, APP_INDEX.keys(), n=1, cutoff=0.4)
+    if matches:
+        best = matches[0]
+        print(f"🚀 Opening: {best} (guessed for '{query}')")
+        try: os.startfile(APP_INDEX[best])
+        except Exception as e: print(f"❌ Failed to open: {e}")
+        return
 
-
-# ===============================================
-# WEB ACTIONS
-# ===============================================
+    # 3. Substring Match (Fallback)
+    for key in APP_INDEX:
+        if query in key:
+            print(f"🚀 Opening: {key}")
+            try: os.startfile(APP_INDEX[key])
+            except: pass
+            return
+    
+    print(f"❌ App '{app_name}' not found.")
+    print("👉 Tip: Add the path to 'MY_CUSTOM_APPS' in the Python script, or type 'refresh'.")
 
 def open_website(url):
-    if url:
-        webbrowser.open(url)
-    else:
-        print("❌ No URL provided")
-
-def google_search(q):
-    webbrowser.open("https://www.google.com/search?q=" + q.replace(" ", "+"))
-
-def youtube_search(q):
-    webbrowser.open("https://www.youtube.com/results?search_query=" + q.replace(" ", "+"))
-
-def google_site_search(site, q):
-    clean = site.replace("www.", "")
-    webbrowser.open(f"https://www.google.com/search?q={q.replace(' ', '+')}+site:{clean}")
-
-def direct_site_search(site, q):
-    clean = site.replace("www.", "")
-
-    if clean in SEARCH_PATTERNS:
-        url = SEARCH_PATTERNS[clean] + q.replace(" ", "+")
-    else:
-        url = f"https://www.google.com/search?q={q.replace(' ','+')}+site:{clean}"
-
+    if not url.startswith("http"): url = "https://" + url
+    print(f"🌐 Opening: {url}")
     webbrowser.open(url)
 
-
-# ===============================================
-# LLM PARSER (FINAL + STABLE)
-# ===============================================
-
-def ask_llm(text):
+def ask_llm(user_input):
+    # AI generates the URL dynamically for ANY website
     prompt = f"""
-Return ONLY valid JSON. No code blocks. No ```json. No markdown.
+    Act as a desktop assistant. Return JSON ONLY.
+    
+    1. OPEN APP: {{ "action": "open_app", "app_name": "name" }}
+    
+    2. SEARCH SPECIFIC SITE: 
+       - Generate the search URL for the site yourself.
+       - Examples:
+         - "Search Amazon for ps5" -> {{ "action": "open_website", "url": "https://www.amazon.com/s?k=ps5" }}
+         - "Search Reddit for news" -> {{ "action": "open_website", "url": "https://www.reddit.com/search/?q=news" }}
+         - "Search ChatGPT for python" -> {{ "action": "open_website", "url": "https://chatgpt.com/?q=python" }}
+    
+    3. GENERAL SEARCH: {{ "action": "google_search", "query": "your query" }}
 
-Allowed actions:
-- open_app
-- open_website
-- google_search
-- youtube_search
-- google_search_on_site
-- direct_site_search
-
-User request: {text}
-"""
-
-    res = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    raw = res.choices[0].message.content
-    print("\nLLM RAW:", raw)
-
-    raw = clean_json(raw)
-
+    User: "{user_input}"
+    """
     try:
-        parsed = json.loads(raw)
-    except:
-        print("❌ JSON parse failed")
-        return {}
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+        res = response.choices[0].message.content.strip()
+        if res.startswith("```"): res = res.replace("```json", "").replace("```", "")
+        return json.loads(res)
+    except Exception as e:
+        print(f"❌ AI Error: {e}")
+        return None
 
-    return normalize(parsed)
-
-
-# ===============================================
-# EXECUTOR
-# ===============================================
-
-def execute(data):
-    action = data.get("action")
-
-    if action == "open_app":
-        return open_app(data.get("app"))
-
-    if action == "open_website":
-        return open_website(data.get("url"))
-
-    if action == "google_search":
-        return google_search(data.get("query"))
-
-    if action == "youtube_search":
-        return youtube_search(data.get("query"))
-
-    if action == "google_search_on_site":
-        return google_site_search(data.get("site"), data.get("query"))
-
-    if action == "direct_site_search":
-        return direct_site_search(data.get("site"), data.get("query"))
-
-    print("❌ Unknown action:", action)
-
-
-# ===============================================
-# MAIN LOOP
-# ===============================================
+# ============================================================
+# 🏁 MAIN LOOP
+# ============================================================
 
 def main():
-    print("\n==============================")
-    print("   AI Desktop Assistant")
-    print("==============================")
+    print("\n===========================================")
+    print("  🤖 AI DESKTOP ASSISTANT (Final Version)")
+    print("===========================================")
+    print("• Type 'refresh' to re-scan your PC.")
+    print("• Type 'exit' to quit.\n")
 
     while True:
-        q = input("\nYou: ").strip()
+        user_input = input("You: ").strip()
+        if not user_input: continue
+        
+        if user_input.lower() in ["exit", "quit"]: break
+        
+        # Force re-scan command
+        if user_input.lower() == "refresh":
+            global APP_INDEX
+            APP_INDEX = build_app_index() 
+            continue
 
-        if q.lower() in ("exit", "quit", "bye"):
-            print("Shutting down…")
-            break
-
-        data = ask_llm(q)
-        execute(data)
-
+        data = ask_llm(user_input)
+        
+        if data:
+            action = data.get("action")
+            
+            if action == "open_app": 
+                open_app(data.get("app_name"))
+                
+            elif action == "open_website": 
+                open_website(data.get("url"))
+                
+            elif action == "google_search": 
+                print(f"🔍 Google: {data.get('query')}")
+                webbrowser.open(f"[https://www.google.com/search?q=](https://www.google.com/search?q=){data.get('query').replace(' ', '+')}")
+            
+            else: 
+                print("❌ Unknown command.")
 
 if __name__ == "__main__":
     main()
