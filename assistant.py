@@ -6,6 +6,7 @@ import difflib
 from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
+import random
 import pyautogui
 import screen_brightness_control as sbc
 import comtypes
@@ -41,6 +42,68 @@ PERSONALITY = (
 )
 
 
+def persona_response(kind, **kwargs):
+    """Return a short, varied reply in Ezio's persona.
+
+    kind: one of 'volume', 'brightness', 'screenshot', 'open_app_ok', 'open_app_not_found',
+          'open_website', 'google_search', 'unknown', 'error'
+    """
+    templates = {
+        'volume': [
+            "Volume bumped to {value}%. Easy peasy.",
+            "All right — volume's now at {value}%."
+            ,"Set to {value}% — that's a solid level."
+        ],
+        'brightness': [
+            "Brightness at {value}%. Eyes should thank you.",
+            "Done. Screen brightness: {value}%.",
+            "Adjusting light to {value}% — comfortable and practical."
+        ],
+        'screenshot': [
+            "Saved screenshot to {path}. Good memory.",
+            "Got it — screenshot stored at {path}.",
+            "Picture taken: {path}. Don't lose it."
+        ],
+        'open_app_ok': [
+            "Opened {name} for you.",
+            "Launched {name}. There you go.",
+            "{name} should be running now."
+        ],
+        'open_app_not_found': [
+            "Couldn't find {name}. Try 'refresh' to rescan.",
+            "I don't see {name} here — maybe run a refresh.",
+            "No match for {name}. You can 'refresh' and I'll try again."
+        ],
+        'open_website': [
+            "Opening the site now.",
+            "Here you go — launching that page.",
+            "On it. The browser should open shortly."
+        ],
+        'google_search': [
+            "Searching Google for '{query}'."
+            ,"I'll look that up: {query}."
+            ,"Searching the web for: {query}."
+        ],
+        'unknown': [
+            "Hmm — I don't know that command. Try something else.",
+            "No idea what that means. Rephrase?",
+            "I can't do that — try a different request."
+        ],
+        'error': [
+            "Ran into an error: {msg}",
+            "Something went sideways: {msg}"
+        ]
+    }
+
+    opts = templates.get(kind, ["Done."])
+    choice = random.choice(opts)
+    try:
+        return choice.format(**kwargs)
+    except Exception:
+        return choice
+
+
+
 def set_system_volume(level):
     """
     Sets the master volume. Level should be an integer between 0 and 100.
@@ -48,53 +111,36 @@ def set_system_volume(level):
     try:
         level = max(0, min(100, int(level)))
         scalar_volume = level / 100.0
-        
-        
+
         devices = AudioUtilities.GetSpeakers()
-        
-        
         interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         volume = cast(interface, POINTER(IAudioEndpointVolume))
-        
-        
         volume.SetMasterVolumeLevelScalar(scalar_volume, None)
-        print(f"🔊 Volume set to {level}%")
-        
-    except Exception as e:
-        print(f"❌ Error setting volume: {e}")
-        print("Trying alternative method...")
-        
-        
+        return True, level
+
+    except Exception:
         try:
             from comtypes import GUID
-            
-            
+
             CLSID_MMDeviceEnumerator = GUID('{BCDE0395-E52F-467C-8E3D-C4579291692E}')
             IID_IMMDeviceEnumerator = GUID('{A95664D2-9614-4F35-A746-DE8DB63617E6}')
-            
-            
+
             enumerator = comtypes.CoCreateInstance(
                 CLSID_MMDeviceEnumerator,
                 comtypes.IUnknown,
                 CLSCTX_ALL
             )
-            
+
             from pycaw.pycaw import IMMDeviceEnumerator, EDataFlow, ERole
             enumerator = enumerator.QueryInterface(IMMDeviceEnumerator)
-            
-            
-            endpoint = enumerator.GetDefaultAudioEndpoint(0, 1)  # eRender, eMultimedia
-            
-            
+            endpoint = enumerator.GetDefaultAudioEndpoint(0, 1)
             interface = endpoint.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
             volume = cast(interface, POINTER(IAudioEndpointVolume))
-            
-            
             volume.SetMasterVolumeLevelScalar(scalar_volume, None)
-            print(f"🔊 Volume set to {level}% (alternative method)")
-            
+            return True, level
+
         except Exception as e2:
-            print(f"❌ Alternative method failed: {e2}")
+            return False, str(e2)
 
 def set_system_brightness(level):
     """
@@ -103,9 +149,9 @@ def set_system_brightness(level):
     try:
         level = max(0, min(100, int(level)))
         sbc.set_brightness(level)
-        print(f"☀️ Brightness set to {level}%")
+        return True, level
     except Exception as e:
-        print(f"❌ Error setting brightness: {e}")
+        return False, str(e)
 
 def take_screenshot():
     """
@@ -115,19 +161,17 @@ def take_screenshot():
         folder_name = "Screenshots"
         if not os.path.exists(folder_name):
             os.makedirs(folder_name)
-            
+
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"screenshot_{timestamp}.png"
         filepath = os.path.join(folder_name, filename)
-        
+
         screenshot = pyautogui.screenshot()
         screenshot.save(filepath)
-        
-        print(f"📸 Screenshot saved to: {filepath}")
-        return filepath
+
+        return True, filepath
     except Exception as e:
-        print(f"❌ Error taking screenshot: {e}")
-        return None
+        return False, str(e)
 
 
 
@@ -219,25 +263,31 @@ def load_app_index():
     return build_app_index()
 
 APP_INDEX = load_app_index()
+
+
 def open_app(app_name):
-    if not app_name: return
+    if not app_name:
+        return False, "no app name"
+
     query = app_name.lower().strip()
 
     if query in APP_INDEX:
-        print(f"🚀 Opening: {query}")
-        try: os.startfile(APP_INDEX[query])
-        except Exception as e: print(f"❌ Failed to open: {e}")
-        return
+        try:
+            os.startfile(APP_INDEX[query])
+            return True, query
+        except Exception as e:
+            return False, str(e)
 
     matches = difflib.get_close_matches(query, APP_INDEX.keys(), n=1, cutoff=0.4)
     if matches:
         best = matches[0]
-        print(f"🚀 Opening: {best} (guessed for '{query}')")
-        try: os.startfile(APP_INDEX[best])
-        except Exception as e: print(f"❌ Failed to open: {e}")
-        return
+        try:
+            os.startfile(APP_INDEX[best])
+            return True, best
+        except Exception as e:
+            return False, str(e)
 
-    print(f"❌ App '{app_name}' not found. Try 'refresh' to rescan.")
+    return False, f"not_found:{app_name}"
 
 def ask_llm(user_input):
     prompt = f"""
@@ -325,31 +375,50 @@ def assist_mode():
         
         if data:
             action = data.get("action")
-            
-            if action == "open_app": 
-                open_app(data.get("app_name"))
-                
-            elif action == "open_website": 
-                print(f"🌐 Opening URL...")
+
+            if action == "open_app":
+                ok, info = open_app(data.get("app_name"))
+                if ok:
+                    print(persona_response('open_app_ok', name=info))
+                else:
+                    if isinstance(info, str) and info.startswith("not_found:"):
+                        name = info.split(":", 1)[1]
+                        print(persona_response('open_app_not_found', name=name))
+                    else:
+                        print(persona_response('error', msg=info))
+
+            elif action == "open_website":
                 webbrowser.open(data.get("url"))
-                
-            elif action == "google_search": 
-                print(f"🔍 Google: {data.get('query')}")
-                webbrowser.open(f"https://www.google.com/search?q={data.get('query').replace(' ', '+')}")
-            
-            # --- NEW SYSTEM HANDLERS ---
+                print(persona_response('open_website'))
+
+            elif action == "google_search":
+                query = data.get('query')
+                webbrowser.open(f"https://www.google.com/search?q={query.replace(' ', '+')}")
+                print(persona_response('google_search', query=query))
+
             elif action == "set_volume":
-                set_system_volume(data.get("value"))
-                
+                ok, info = set_system_volume(data.get("value"))
+                if ok:
+                    print(persona_response('volume', value=info))
+                else:
+                    print(persona_response('error', msg=info))
+
             elif action == "set_brightness":
-                set_system_brightness(data.get("value"))
-                
+                ok, info = set_system_brightness(data.get("value"))
+                if ok:
+                    print(persona_response('brightness', value=info))
+                else:
+                    print(persona_response('error', msg=info))
+
             elif action == "take_screenshot":
-                take_screenshot()
-            # ---------------------------
-            
-            else: 
-                print("❌ Unknown command.")
+                ok, info = take_screenshot()
+                if ok:
+                    print(persona_response('screenshot', path=info))
+                else:
+                    print(persona_response('error', msg=info))
+
+            else:
+                print(persona_response('unknown'))
 
 def main_menu():
     print("\n===========================================")
