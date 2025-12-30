@@ -6,10 +6,6 @@ import difflib
 from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
-
-# ==========================================
-# 📦 SYSTEM CONTROL LIBRARIES
-# ==========================================
 import pyautogui
 import screen_brightness_control as sbc
 import comtypes
@@ -17,7 +13,6 @@ from ctypes import cast, POINTER
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
-# Load API key
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
@@ -28,9 +23,7 @@ client = OpenAI(
 
 MODEL = "llama-3.3-70b-versatile"
 
-# ============================================================
-# 🔧 CONFIGURATION: CUSTOM APPS & PATHS
-# ============================================================
+
 MY_CUSTOM_APPS = {
     "marvel rivals": r"C:\Program Files (x86)\Steam\steamapps\common\MarvelRivals\Launcher.exe",
     "valorant": r"C:\Riot Games\Riot Client\RiotClientServices.exe",
@@ -39,9 +32,14 @@ MY_CUSTOM_APPS = {
 
 APP_INDEX_FILE = "app_database.json"
 
-# ============================================================
-# 🎛️ SYSTEM CONTROL ENGINE (Volume Fixed)
-# ============================================================
+
+PERSONALITY = (
+    "Calm, friendly, and confident. Speaks like a seasoned mentor who's seen worse and survived it. "
+    "Supportive and relaxed, occasionally sarcastic—never mean or constant. "
+    "Gives clear guidance without overexplaining. Responds to mistakes with patience and light humor. "
+    "Observant first, clever second, decisive when needed."
+)
+
 
 def set_system_volume(level):
     """
@@ -51,14 +49,14 @@ def set_system_volume(level):
         level = max(0, min(100, int(level)))
         scalar_volume = level / 100.0
         
-        # Get the speakers (default audio device)
+        
         devices = AudioUtilities.GetSpeakers()
         
-        # Activate the audio endpoint volume interface
+        
         interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         volume = cast(interface, POINTER(IAudioEndpointVolume))
         
-        # Set the volume
+        
         volume.SetMasterVolumeLevelScalar(scalar_volume, None)
         print(f"🔊 Volume set to {level}%")
         
@@ -66,15 +64,15 @@ def set_system_volume(level):
         print(f"❌ Error setting volume: {e}")
         print("Trying alternative method...")
         
-        # Alternative: Direct COM access
+        
         try:
             from comtypes import GUID
             
-            # Device enumerator CLSID
+            
             CLSID_MMDeviceEnumerator = GUID('{BCDE0395-E52F-467C-8E3D-C4579291692E}')
             IID_IMMDeviceEnumerator = GUID('{A95664D2-9614-4F35-A746-DE8DB63617E6}')
             
-            # Create device enumerator
+            
             enumerator = comtypes.CoCreateInstance(
                 CLSID_MMDeviceEnumerator,
                 comtypes.IUnknown,
@@ -84,14 +82,14 @@ def set_system_volume(level):
             from pycaw.pycaw import IMMDeviceEnumerator, EDataFlow, ERole
             enumerator = enumerator.QueryInterface(IMMDeviceEnumerator)
             
-            # Get default audio output device
+            
             endpoint = enumerator.GetDefaultAudioEndpoint(0, 1)  # eRender, eMultimedia
             
-            # Activate volume control
+            
             interface = endpoint.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
             volume = cast(interface, POINTER(IAudioEndpointVolume))
             
-            # Set volume
+            
             volume.SetMasterVolumeLevelScalar(scalar_volume, None)
             print(f"🔊 Volume set to {level}% (alternative method)")
             
@@ -131,9 +129,7 @@ def take_screenshot():
         print(f"❌ Error taking screenshot: {e}")
         return None
 
-# ============================================================
-# 🔍 INDEXING ENGINE (Deep Scan Restored)
-# ============================================================
+
 
 def build_app_index():
     print("\n⚡ STARTING FULL SYSTEM SCAN (This happens once)...")
@@ -223,11 +219,6 @@ def load_app_index():
     return build_app_index()
 
 APP_INDEX = load_app_index()
-
-# ============================================================
-# 🚀 EXECUTION & AI
-# ============================================================
-
 def open_app(app_name):
     if not app_name: return
     query = app_name.lower().strip()
@@ -251,6 +242,8 @@ def open_app(app_name):
 def ask_llm(user_input):
     prompt = f"""
     Act as a desktop assistant. Return JSON ONLY.
+
+    Personality: {PERSONALITY}
     
     1. APP CONTROL: {{ "action": "open_app", "app_name": "name" }}
     
@@ -282,23 +275,46 @@ def ask_llm(user_input):
         print(f"❌ AI Error: {e}")
         return None
 
-# ============================================================
-# 🏁 MAIN LOOP
-# ============================================================
-
-def main():
-    print("\n===========================================")
-    print(" 🤖 AI DESKTOP ASSISTANT (v2.2 - Final)")
-    print("===========================================")
-    print("• Try: 'Set volume to 50%' or 'Dim screen to 10%'")
-    print("• Type 'refresh' to re-scan your PC.")
-    print("• Type 'exit' to quit.\n")
-
+def chat_mode():
+    print("\n💬 Entered CHAT MODE. (Type 'relax ezio' to return to menu)")
+    chat_history = [
+        {"role": "system", "content": f"You are Ezio, a helpful and intelligent AI assistant. {PERSONALITY} Keep answers concise."}
+    ]
+    
     while True:
-        user_input = input("You: ").strip()
+        user_input = input("Ezio (Chat): ").strip()
         if not user_input: continue
         
-        if user_input.lower() in ["exit", "quit"]: break
+        if user_input.lower() == "relax ezio":
+            print("Returning to main menu...")
+            break
+            
+        chat_history.append({"role": "user", "content": user_input})
+        
+        try:
+            response = client.chat.completions.create(
+                model=MODEL,
+                messages=chat_history,
+                temperature=0.7
+            )
+            reply = response.choices[0].message.content.strip()
+            print(f"Ezio: {reply}")
+            chat_history.append({"role": "assistant", "content": reply})
+            
+        except Exception as e:
+            print(f"❌ Chat Error: {e}")
+
+def assist_mode():
+    print("\n🤖 Entered ASSIST MODE. (Type 'relax ezio' to return to menu)")
+    print("• Try: 'Set volume to 50%', 'Open Notepad', 'Search Google'")
+    
+    while True:
+        user_input = input("Ezio (Assist): ").strip()
+        if not user_input: continue
+        
+        if user_input.lower() == "relax ezio":
+            print("Returning to main menu...")
+            break
         
         if user_input.lower() == "refresh":
             global APP_INDEX
@@ -319,7 +335,7 @@ def main():
                 
             elif action == "google_search": 
                 print(f"🔍 Google: {data.get('query')}")
-                webbrowser.open(f"[https://www.google.com/search?q=](https://www.google.com/search?q=){data.get('query').replace(' ', '+')}")
+                webbrowser.open(f"https://www.google.com/search?q={data.get('query').replace(' ', '+')}")
             
             # --- NEW SYSTEM HANDLERS ---
             elif action == "set_volume":
@@ -335,5 +351,27 @@ def main():
             else: 
                 print("❌ Unknown command.")
 
+def main_menu():
+    print("\n===========================================")
+    print(" 🦅 EZIO AI ASSISTANT (v3.0 - State Machine)")
+    print("===========================================")
+    print("Select a mode:")
+    print("1. Type 'Chat' for Conversation Mode")
+    print("2. Type 'Assist' for Desktop Control Mode")
+    print("3. Type 'Exit' to quit")
+    
+    while True:
+        choice = input("\nMenu > ").strip().lower()
+        
+        if choice == "chat":
+            chat_mode()
+        elif choice == "assist":
+            assist_mode()
+        elif choice in ["exit", "quit"]:
+            print("Goodbye!")
+            break
+        else:
+            print("❌ Invalid option. Please type 'Chat', 'Assist', or 'Exit'.")
+
 if __name__ == "__main__":
-    main()
+    main_menu()
