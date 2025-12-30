@@ -3,6 +3,7 @@ import webbrowser
 import json
 import os
 import difflib
+import psutil
 from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -26,7 +27,7 @@ MODEL = "llama-3.3-70b-versatile"
 
 
 MY_CUSTOM_APPS = {
-    "marvel rivals": r"C:\Program Files (x86)\Steam\steamapps\common\MarvelRivals\Launcher.exe",
+    "marvel rivals": r"C:\Program Files (x86)\Steam\steamapps\common\MarvelRivals\MarvelGame\Marvel.exe",
     "valorant": r"C:\Riot Games\Riot Client\RiotClientServices.exe",
     "obs": r"C:\Program Files\obs-studio\bin\64bit\obs64.exe",
 }
@@ -222,6 +223,44 @@ def take_screenshot():
         return True, filepath
     except Exception as e:
         return False, str(e)
+
+
+def get_system_status():
+    """
+    Return a short string describing current CPU %, RAM %, and Battery status (if available).
+    """
+    try:
+        cpu = psutil.cpu_percent(interval=0.5)
+    except Exception:
+        cpu = None
+    try:
+        mem = psutil.virtual_memory().percent
+    except Exception:
+        mem = None
+
+    battery = None
+    try:
+        batt = psutil.sensors_battery()
+        if batt is not None:
+            battery = {
+                'percent': int(batt.percent),
+                'plugged': bool(batt.power_plugged)
+            }
+    except Exception:
+        battery = None
+
+    parts = []
+    if cpu is not None:
+        parts.append(f"CPU: {int(cpu)}%")
+    if mem is not None:
+        parts.append(f"RAM: {int(mem)}%")
+    if battery is not None:
+        plug = 'charging' if battery['plugged'] else 'on battery'
+        parts.append(f"Battery: {battery['percent']}% ({plug})")
+
+    if not parts:
+        return "System stats unavailable"
+    return " | ".join(parts)
 
 
 
@@ -453,6 +492,41 @@ def execute_action(action, data=None):
         print(persona_response('google_search', query=query))
         return True, query
 
+    # check_status
+    if a == 'check_status':
+        stats = get_system_status()
+        print(stats)
+        try:
+            cpu = psutil.cpu_percent(interval=0.5)
+        except Exception:
+            cpu = None
+        try:
+            mem = psutil.virtual_memory().percent
+        except Exception:
+            mem = None
+        try:
+            batt = psutil.sensors_battery()
+        except Exception:
+            batt = None
+
+        comment = ""
+        if cpu is not None and cpu > 90:
+            comment = f"Warning — CPU is very high at {int(cpu)}%. Consider closing heavy apps."
+        elif mem is not None and mem > 90:
+            comment = f"Warning — RAM at {int(mem)}%. You might run out of memory."
+        elif batt is not None and getattr(batt, 'percent', None) is not None and batt.percent < 20 and not getattr(batt, 'power_plugged', False):
+            comment = f"Battery low ({int(batt.percent)}%) — plug in soon."
+        else:
+            comment = "Looks stable — nothing to worry about."
+
+        print(comment)
+        try:
+            STATE['last_action'] = 'check_status'
+            STATE['last_status'] = stats
+        except Exception:
+            pass
+        return True, stats
+
     # run_routine
     if a == 'run_routine':
         if isinstance(data, dict):
@@ -483,28 +557,34 @@ def execute_action(action, data=None):
     return False, 'unknown_action'
 
 def ask_llm(user_input):
+    status_info = get_system_status()
+
     prompt = f"""
-    Act as a desktop assistant. Return JSON ONLY.
+Act as a desktop assistant. Return JSON ONLY.
 
-    Personality: {PERSONALITY}
-    
-    1. APP CONTROL: {{ "action": "open_app", "app_name": "name" }}
-    
-    2. SYSTEM CONTROL (Volume/Brightness):
-       - Extract the number (0-100). If user says "max", use 100. "Mute" is 0.
-       - "Set volume to 50%" -> {{ "action": "set_volume", "value": 50 }}
-       - "Brightness 20" -> {{ "action": "set_brightness", "value": 20 }}
-    
-    3. SCREENSHOT:
-       - "Take a screenshot" -> {{ "action": "take_screenshot" }}
-    
-    4. SEARCH SPECIFIC SITE: 
-       - "Search Amazon for ps5" -> {{ "action": "open_website", "url": "https://www.amazon.com/s?k=ps5" }}
-    
-    5. GENERAL SEARCH: {{ "action": "google_search", "query": "your query" }}
+Personality: {PERSONALITY}
 
-    User: "{user_input}"
-    """
+CURRENT SYSTEM HEALTH: {status_info}
+
+1. APP CONTROL: {{ "action": "open_app", "app_name": "name" }}
+
+2. SYSTEM CONTROL (Volume/Brightness):
+   - Extract the number (0-100). If user says "max", use 100. "Mute" is 0.
+   - "Set volume to 50%" -> {{ "action": "set_volume", "value": 50 }}
+   - "Brightness 20" -> {{ "action": "set_brightness", "value": 20 }}
+
+3. SCREENSHOT:
+   - "Take a screenshot" -> {{ "action": "take_screenshot" }}
+
+4. SEARCH SPECIFIC SITE: 
+   - "Search Amazon for ps5" -> {{ "action": "open_website", "url": "https://www.amazon.com/s?k=ps5" }}
+
+5. STATUS CHECK: If user asks for stats/health, return {{ 'action': 'check_status' }}
+
+6. GENERAL SEARCH: {{ "action": "google_search", "query": "your query" }}
+
+User: "{user_input}"
+"""
     try:
         response = client.chat.completions.create(
             model=MODEL,
@@ -521,7 +601,7 @@ def ask_llm(user_input):
 def chat_mode():
     print("\n💬 Entered CHAT MODE. (Type 'relax ezio' to return to menu)")
     chat_history = [
-        {"role": "system", "content": f"You are Ezio, a helpful and intelligent AI assistant. {PERSONALITY} Keep answers concise."}
+        {"role": "system", "content": f"You are Ezio, a helpful and intelligent AI assistant. {PERSONALITY} Keep answers concise. CURRENT SYSTEM HEALTH: {get_system_status()}"}
     ]
     
     while True:
@@ -692,3 +772,11 @@ def main_menu():
 
 if __name__ == "__main__":
     main_menu()
+
+
+# --- DEMO COMMANDS TO TRY ---
+# Try these in Assist mode to exercise the new system-awareness features:
+# 1. "Check system status"        -> Should return CPU/RAM/Battery and a comment.
+# 2. "What's my PC health?"        -> LLM should parse and trigger { 'action': 'check_status' }.
+# 3. "Set volume to 30%" then "undo" -> Test stateful undo and recent action recall.
+# 4. "Take a screenshot"           -> Saves an image and reports the path.
