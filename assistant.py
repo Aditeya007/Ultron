@@ -1253,67 +1253,55 @@ User: "{user_input}"
         print(f"❌ AI Error: {e}")
         return None
 
-def chat_mode():
-    print("\n💬 Entered CHAT MODE. (Type 'relax ezio' to return to menu)")
+def unified_interaction_loop():
+    """
+    Unified interaction loop - merges chat and assist modes.
+    
+    Behavior:
+    - Accepts free-form user input
+    - Attempts to parse executable action via ask_llm()
+    - If valid action found: execute via execute_action() and return to prompt
+    - If no action: treat as conversational, generate chat response
+    - Maintains chat_history ONLY for conversational turns (NOT execution results)
+    - Updates last_user_interaction timestamp on every input (for autonomous agent)
+    """
+    print("\n===========================================")
+    print(" 🦅 EZIO AI ASSISTANT (v3.1 - Unified Mode)")
+    print("===========================================")
+    print("💬 Chat naturally, or prefix with 'task:' for commands")
+    print("   Example: 'task: set volume to 50%'")
+    print("   Type 'exit' to quit")
+    
+    # Chat history for conversational turns only (NOT execution results)
     chat_history = [
         {"role": "system", "content": f"You are Ezio, a helpful and intelligent AI assistant. {PERSONALITY} Keep answers concise. CURRENT SYSTEM HEALTH: {get_system_status()}"}
     ]
     
     while True:
-        user_input = input("Ezio (Chat): ").strip()
+        user_input = input("\nEzio > ").strip()
         
         # Update user interaction timestamp (for autonomous agent)
-        # Confidence recovery removed - must happen via internal conditions only
+        # Does NOT modify confidence_to_initiate - that changes only via internal conditions
         with motivation_lock:
             MOTIVATION_STATE['last_user_interaction'] = time.time()
             MOTIVATION_STATE['silence_duration'] = 0.0
         
-        if not user_input: continue
+        if not user_input:
+            continue
         
-        if user_input.lower() == "relax ezio":
-            print("Returning to main menu...")
-            break
-            
-        chat_history.append({"role": "user", "content": user_input})
-        
-        try:
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=chat_history,
-                temperature=0.7
-            )
-            reply = response.choices[0].message.content.strip()
-            print(f"Ezio: {reply}")
-            chat_history.append({"role": "assistant", "content": reply})
-            
-        except Exception as e:
-            print(f"❌ Chat Error: {e}")
-
-def assist_mode():
-    print("\n🤖 Entered ASSIST MODE. (Type 'relax ezio' to return to menu)")
-    print("• Try: 'Set volume to 50%', 'Open Notepad', 'Search Google'")
-    
-    while True:
-        user_input = input("Ezio (Assist): ").strip()
-        
-        # Update user interaction timestamp (for autonomous agent)
-        # Confidence recovery removed - must happen via internal conditions only
-        with motivation_lock:
-            MOTIVATION_STATE['last_user_interaction'] = time.time()
-            MOTIVATION_STATE['silence_duration'] = 0.0
-        
-        if not user_input: continue
-        
-        if user_input.lower() == "relax ezio":
-            print("Returning to main menu...")
+        if user_input.lower() in ['exit', 'quit']:
+            print("Goodbye!")
             break
         
+        # Handle app index refresh (local command)
         if user_input.lower() == "refresh":
             global APP_INDEX
-            APP_INDEX = build_app_index() 
+            APP_INDEX = build_app_index()
+            print("App index refreshed.")
             continue
-
+        
         # --- Handle pending confirmations (yes/no) for risky actions ---
+        # Must be checked BEFORE LLM parsing to avoid confusion
         if STATE.get('pending_action') is not None:
             ans = user_input.strip().lower()
             if ans in ('yes', 'no'):
@@ -1321,22 +1309,24 @@ def assist_mode():
                 if ans == 'yes':
                     act = pending.get('action')
                     if act == 'shutdown':
-                        print(persona_response('open_website'))
+                        print("Shutting down...")
                         os.system('shutdown /s /t 0')
                     elif act == 'restart':
-                        print(persona_response('open_website'))
+                        print("Restarting...")
                         os.system('shutdown /r /t 0')
                     else:
-                        print(persona_response('open_website'))
+                        print("Confirmed.")
                 else:
-                    print(persona_response('unknown'))
+                    print("Action cancelled.")
             else:
-                print(persona_response('unknown'))
+                print("Please answer 'yes' or 'no'.")
             continue
-
-        # --- Handle follow-up/local commands without calling the LLM ---
+        
+        # --- Handle local follow-up commands without calling LLM ---
+        # These rely on STATE context from previous actions
         lu = user_input.strip().lower()
-        # Undo / revert
+        
+        # Undo / revert last action
         if lu in ('undo', 'revert', 'revert that'):
             if STATE.get('last_action') == 'set_volume' and STATE.get('prev_volume') is not None:
                 ok, info = set_system_volume(STATE['prev_volume'])
@@ -1352,8 +1342,8 @@ def assist_mode():
                 else:
                     print(persona_response('error', msg=info))
                 continue
-
-        # relative adjustments and repeats
+        
+        # Relative adjustments (lower/decrease)
         if 'lower it' in lu or 'decrease it' in lu:
             if STATE.get('last_action') == 'set_volume' and STATE.get('last_volume') is not None:
                 new = max(0, STATE['last_volume'] - 10)
@@ -1371,7 +1361,8 @@ def assist_mode():
                 else:
                     print(persona_response('error', msg=info))
                 continue
-
+        
+        # Relative adjustments (increase/raise)
         if 'increase it' in lu or 'raise it' in lu or 'turn it up' in lu:
             if STATE.get('last_action') == 'set_volume' and STATE.get('last_volume') is not None:
                 new = min(100, STATE['last_volume'] + 10)
@@ -1389,7 +1380,8 @@ def assist_mode():
                 else:
                     print(persona_response('error', msg=info))
                 continue
-
+        
+        # Repeat last app opened
         if 'open it again' in lu or 'open again' in lu or 'open it' == lu:
             last = STATE.get('last_opened_app')
             if last:
@@ -1399,51 +1391,58 @@ def assist_mode():
                 else:
                     print(persona_response('error', msg=info))
                 continue
-
-        data = ask_llm(user_input)
-
-        if data:
-            action = data.get("action")
-
-            # Keep risky confirmations local (shutdown/restart)
-            if action in ('shutdown', 'restart'):
-                STATE['pending_action'] = {'action': action}
-                print(persona_response('unknown'))
+        
+        # --- ACTION DETECTION: Only parse actions if prefixed with "task:" or "task :" ---
+        # This gives user explicit control over when to execute vs when to chat
+        lu_check = user_input.lower().strip()
+        if lu_check.startswith('task:') or lu_check.startswith('task :'):
+            # Strip "task:" or "task :" prefix and parse for executable action
+            if lu_check.startswith('task:'):
+                command = user_input[5:].strip()  # Remove "task:"
+            else:
+                command = user_input[6:].strip()  # Remove "task :"
+            data = ask_llm(command)
+            
+            if data and isinstance(data, dict) and 'action' in data:
+                # Valid action detected - execute immediately
+                action = data.get("action")
+                
+                # Handle risky actions with confirmation (shutdown/restart)
+                if action in ('shutdown', 'restart'):
+                    STATE['pending_action'] = {'action': action}
+                    print(f"Are you sure you want to {action}? (yes/no)")
+                    continue
+                
+                # Execute action via central dispatcher
+                # execute_action() prints persona_response output
+                ok, info = execute_action(action, data)
+                # Action executed - do NOT generate chat response
+                # Return to prompt immediately
                 continue
-
-            # Delegate execution to the central dispatcher
-            ok, info = execute_action(action, data)
-            # execute_action already prints persona_response for user-facing output
-            # we simply continue; callers can inspect ok/info if needed
-            continue
-
-def main_menu():
-    print("\n===========================================")
-    print(" 🦅 EZIO AI ASSISTANT (v3.0 - State Machine)")
-    print("===========================================")
-    print("Select a mode:")
-    print("1. Type 'Chat' for Conversation Mode")
-    print("2. Type 'Assist' for Desktop Control Mode")
-    print("3. Type 'Exit' to quit")
-    
-    while True:
-        choice = input("\nMenu > ").strip().lower()
+            else:
+                # Failed to parse action from command
+                print("I couldn't understand that command. Try rephrasing.")
+                continue
         
-        # Update user interaction timestamp (for autonomous agent)
-        # Confidence recovery removed - must happen via internal conditions only
-        with motivation_lock:
-            MOTIVATION_STATE['last_user_interaction'] = time.time()
-            MOTIVATION_STATE['silence_duration'] = 0.0
+        # --- NO "task:" PREFIX: Treat as conversational input ---
+        # Add user message to chat history
+        chat_history.append({"role": "user", "content": user_input})
         
-        if choice == "chat":
-            chat_mode()
-        elif choice == "assist":
-            assist_mode()
-        elif choice in ["exit", "quit"]:
-            print("Goodbye!")
-            break
-        else:
-            print("❌ Invalid option. Please type 'Chat', 'Assist', or 'Exit'.")
+        try:
+            # Generate conversational response
+            response = client.chat.completions.create(
+                model=MODEL,
+                messages=chat_history,
+                temperature=0.7
+            )
+            reply = response.choices[0].message.content.strip()
+            print(f"Ezio: {reply}")
+            
+            # Add assistant reply to chat history (conversation only)
+            chat_history.append({"role": "assistant", "content": reply})
+            
+        except Exception as e:
+            print(f"❌ Chat Error: {e}")
 
 if __name__ == "__main__":
     # Start autonomous background loop in daemon thread
@@ -1452,16 +1451,23 @@ if __name__ == "__main__":
     agent_thread = threading.Thread(target=autonomous_background_loop, daemon=True)
     agent_thread.start()
     
-    # Run main menu (existing functionality preserved)
-    main_menu()
+    # Run unified interaction loop (merged chat + assist modes)
+    unified_interaction_loop()
 
 
 # --- DEMO COMMANDS TO TRY ---
-# Try these in Assist mode to exercise the new system-awareness features:
-# 1. "Check system status"        -> Should return CPU/RAM/Battery and a comment.
-# 2. "What's my PC health?"        -> LLM should parse and trigger { 'action': 'check_status' }.
-# 3. "Set volume to 30%" then "undo" -> Test stateful undo and recent action recall.
-# 4. "Take a screenshot"           -> Saves an image and reports the path.
+# Conversational (no prefix):
+# - "yo how are you?"
+# - "How does RAM usage look?"
+# - "What's the weather like?"
+#
+# Commands (prefix with "task:"):
+# - "task: check system status"     -> Returns CPU/RAM/Battery stats
+# - "task: set volume to 30%"       -> Executes volume change
+# - "undo"                           -> Reverts last action (no prefix needed)
+# - "task: take a screenshot"       -> Saves screenshot
+# - "task: open notepad"            -> Opens application
+# - "task: search google for python tutorials"
 #
 # AUTONOMOUS AGENT FEATURES:
 # - The agent runs a background loop that monitors system state continuously
