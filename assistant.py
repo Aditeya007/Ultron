@@ -18,6 +18,7 @@ import screen_brightness_control as sbc
 from ctypes import cast, POINTER
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+from plyer import notification
 
 # --- 1. SYSTEM INITIALIZATION & CONFIG ---
 init(autoreset=True)
@@ -47,6 +48,21 @@ def ui_print(text, type="info"):
         timestamp = datetime.now().strftime("%H:%M:%S")
         if type == "agent":
             sys.stdout.write(f"{Fore.CYAN}[{timestamp}] ULTRON: {Style.BRIGHT}{text}\n")
+            
+            # Windows Toast Notification for agent messages
+            try:
+                # Truncate message to 250 characters (Windows limit is 256)
+                notification_text = text[:247] + "..." if len(text) > 250 else text
+                notification.notify(
+                    title=f"Ultron ({timestamp})",
+                    message=notification_text,
+                    app_name="Ultron AI",
+                    timeout=5
+                )
+            except Exception as e:
+                # Silently fail if notification service is busy
+                logging.debug(f"Notification failed: {e}")
+                pass
         elif type == "soul":
             sys.stdout.write(f"{Fore.MAGENTA}[INTERNAL] {text}\n")
         elif type == "warning":
@@ -407,7 +423,7 @@ def main():
     print(Fore.CYAN + Style.BRIGHT + """
     ╔════════════════════════════════════════╗
     ║        U L T R O N   S Y S T E M       ║
-    ║        v5.7 - REACTIVE PATCH           ║
+    ║      v5.6 - DESKTOP PRESENCE           ║
     ╚════════════════════════════════════════╝
     """)
     
