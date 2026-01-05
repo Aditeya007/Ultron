@@ -1,0 +1,34 @@
+# Ignore Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Ignore logs
+*.log
+
+# Ignore environment variables
+.env
+
+# Ignore Node modules
+node_modules/
+
+# Ignore build outputs
+frontend/dist/
+frontend/build/
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore IDE
+.vscode/
+.idea/
+*.swp
+*.swo
