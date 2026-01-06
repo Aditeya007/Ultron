@@ -218,7 +218,7 @@ async def autonomous_thought_loop():
                 last_thought = now
             
             # PRIORITY 2: Boredom (User has been silent too long)
-            elif time_since_user_action > 120 and time_since_last_thought > 120:
+            elif time_since_user_action > 300 and time_since_last_thought > 300:
                 if random.random() < 0.5:
                     thought = brain.think_autonomous("bored")
                     trigger = "boredom"
@@ -226,7 +226,7 @@ async def autonomous_thought_loop():
                     last_thought = now
             
             # PRIORITY 3: Random Thoughts (When user is active)
-            elif time_since_user_action < 120 and time_since_last_thought > 90:
+            elif time_since_user_action < 300 and time_since_last_thought > random.randint(300, 600):
                 chance = 0.1 + (core.arousal * 0.2)
                 if random.random() < chance:
                     thought = brain.think_autonomous("random")

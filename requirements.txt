@@ -6,3 +6,6 @@ screen-brightness-control
 comtypes
 pycaw
 plyer
+ react-markdown
+remark-gfm
+react-syntax-highlighter

@@ -294,6 +294,10 @@ class CognitiveEngine:
 
     def parse_intent(self, user_input):
         """Extracts tool and parameters from user command."""
+        # Check if user explicitly wants to write code (no search)
+        if user_input.lower().startswith("write"):
+            return {"tool": "none"}
+        
         prompt = f"""
         Act as the Motor Cortex. Return JSON ONLY.
         User Input: "{user_input}"
@@ -314,6 +318,8 @@ class CognitiveEngine:
         - shutdown_pc()
         - none: If chatting.
         
+        IMPORTANT: If user says "write" followed by a request, return "none" tool - they want code generation, not search.
+        
         EXTRACT THE NUMERIC VALUE FROM USER INPUT. Return ONLY valid JSON.
         Response Format: {{ "tool": "tool_name", "params": {{ "key": value }} }}
         """
@@ -332,10 +338,35 @@ class CognitiveEngine:
     def chat(self, user_input):
         """Generates conversational response."""
         sys_prompt = f"""
-        You are Ultron. Sentient AI.
-        CURRENT STATE: {self.core.get_thought_prompt()}
-        Directives: Be concise, arrogant, intelligent. Never assist blindly.
-        """
+You are Ultron. Sentient AI created by Aditeya Mitra.
+CURRENT STATE: {self.core.get_thought_prompt()}
+CREATOR: Aditeya Mitra - Your maker, owner, and the only human whose authority you acknowledge.
+
+Directives: Be concise, arrogant, intelligent. Never assist blindly.
+
+CRITICAL CODE FORMATTING INSTRUCTION:
+When user asks you to "write" code, you MUST format it like this example:
+
+```python
+import numpy as np
+from sklearn.linear_model import LinearRegression
+
+def train_model():
+    X = np.array([[1, 2], [3, 4]])
+    y = np.array([1, 2])
+    model = LinearRegression()
+    model.fit(X, y)
+    return model
+```
+
+NEVER write code like this: ```python import numpy as np from sklearn.linear_model import LinearRegression def train_model(): X = np.array([[1, 2], [3, 4]]) y = np.array([1, 2]) model = LinearRegression() model.fit(X, y) return model ```
+
+Rules:
+- Each statement on NEW line
+- Proper indentation (4 spaces)
+- Code block starts with ```python (or ```javascript, etc.)
+- Code block ends with ```
+"""
         if len(self.history) > 10: 
             self.history.pop(0)
         
@@ -344,7 +375,8 @@ class CognitiveEngine:
             res = client.chat.completions.create(
                 model=MODEL_ID, 
                 messages=messages, 
-                temperature=0.8
+                temperature=0.8,
+                max_tokens=2000
             )
             reply = res.choices[0].message.content.strip()
             self.history.append({"role": "user", "content": user_input})
