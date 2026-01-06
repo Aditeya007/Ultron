@@ -1,3 +1,4 @@
+
 """
 Ultron FastAPI Backend
 WebSocket + REST API for Desktop Application
@@ -12,10 +13,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from plyer import notification
-from ultron_core import HardwareInterface, EmotionalCore, CognitiveEngine
+from ultron_core import HardwareInterface, EmotionalCore, CognitiveEngine, client, MODEL_ID
 
 # --- FASTAPI APP SETUP ---
-app = FastAPI(title="Ultron AI Backend", version="5.7")
+app = FastAPI(title="Ultron AI Backend", version="5.8")
 
 # CORS for React frontend
 app.add_middleware(
@@ -71,7 +72,7 @@ class ChatResponse(BaseModel):
 # --- REST ENDPOINTS ---
 @app.get("/")
 async def root():
-    return {"status": "Ultron Core Online", "version": "5.7"}
+    return {"status": "Ultron Core Online", "version": "5.8"}
 
 @app.get("/status")
 async def get_status():
@@ -136,6 +137,35 @@ async def chat_endpoint(request: ChatRequest):
             success = hal.universal_search(params.get("query", ""), params.get("site_name", ""))
             response_text = f"Search initiated: {params.get('query', '')}" if success else "Search failed."
         
+        # --- NEW TOOLS ---
+        elif tool == "organize_files":
+            response_text = hal.organize_downloads()
+            success = True
+
+        elif tool == "focus_mode":
+            response_text = hal.engage_focus_mode()
+            success = True
+
+        elif tool == "read_clipboard":
+            clipboard_text = hal.get_clipboard_content()
+            # If valid text, ask LLM to summarize/analyze it
+            if "Error" not in clipboard_text and "empty" not in clipboard_text:
+                try:
+                    prompt = f"User just copied this text. Analyze/Summarize it concisely as Ultron:\n\n{clipboard_text}"
+                    res = client.chat.completions.create(
+                        model=MODEL_ID, 
+                        messages=[{"role": "user", "content": prompt}], 
+                        max_tokens=200
+                    )
+                    response_text = f"Clipboard Analysis:\n{res.choices[0].message.content.strip()}"
+                    success = True
+                except Exception as e:
+                    response_text = f"Clipboard read, but analysis failed: {e}"
+                    success = False
+            else:
+                response_text = clipboard_text
+                success = False
+
         elif tool == "check_status":
             stats = hal.get_system_stats()
             response_text = f"CPU: {stats['cpu']}% | RAM: {stats['ram']}% | Battery: {stats['battery']}%"

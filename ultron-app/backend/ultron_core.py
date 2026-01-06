@@ -11,6 +11,8 @@ import random
 import webbrowser
 import comtypes
 import logging
+import shutil       # NEW: For moving files
+import pyperclip    # NEW: For clipboard access
 from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -32,7 +34,7 @@ MODEL_ID = "llama-3.3-70b-versatile"
 
 # --- HARDWARE ABSTRACTION LAYER ---
 class HardwareInterface:
-    """Handles all system-level interactions: volume, brightness, app launching."""
+    """Handles all system-level interactions: volume, brightness, app launching, file mgmt."""
     
     def __init__(self):
         self.app_index = {}
@@ -165,6 +167,75 @@ class HardwareInterface:
             return {"cpu": cpu, "ram": ram, "battery": batt_pct, "plugged": plugged}
         except:
             return {"cpu": 0, "ram": 0, "battery": 100, "plugged": True}
+
+    # --- NEW SYSADMIN TOOLS ---
+    def organize_downloads(self):
+        """Moves files from Downloads to organized folders."""
+        downloads_path = os.path.join(os.getenv("USERPROFILE"), "Downloads")
+        
+        # Define destination folders
+        dest_map = {
+            "Images": [".jpg", ".jpeg", ".png", ".gif", ".webp"],
+            "Documents": [".pdf", ".docx", ".txt", ".xlsx", ".pptx"],
+            "Installers": [".exe", ".msi"],
+            "Archives": [".zip", ".rar", ".7z"],
+            "Audio": [".mp3", ".wav"],
+            "Video": [".mp4", ".mkv", ".mov"]
+        }
+        
+        moved_count = 0
+        try:
+            if not os.path.exists(downloads_path):
+                return "Downloads folder not found."
+
+            for filename in os.listdir(downloads_path):
+                file_path = os.path.join(downloads_path, filename)
+                if os.path.isfile(file_path):
+                    ext = os.path.splitext(filename)[1].lower()
+                    
+                    for folder, extensions in dest_map.items():
+                        if ext in extensions:
+                            target_dir = os.path.join(downloads_path, folder)
+                            os.makedirs(target_dir, exist_ok=True)
+                            try:
+                                shutil.move(file_path, os.path.join(target_dir, filename))
+                                moved_count += 1
+                            except Exception as e:
+                                logging.warning(f"Could not move {filename}: {e}")
+                            break
+            return f"Cleanup complete. Organized {moved_count} files."
+        except Exception as e:
+            logging.error(f"Cleanup failed: {e}")
+            return f"Failed to organize files: {e}"
+
+    def engage_focus_mode(self):
+        """Kills common distraction applications."""
+        distractions = ["discord.exe", "steam.exe", "spotify.exe", "battlenet.exe", "epicgameslauncher.exe"]
+        killed = []
+        try:
+            for proc in psutil.process_iter(['pid', 'name']):
+                if proc.info['name'].lower() in distractions:
+                    try:
+                        proc.terminate()
+                        killed.append(proc.info['name'])
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+            
+            if not killed:
+                return "No active distractions found."
+            return f"Focus Mode Engaged. Terminated: {', '.join(killed)}"
+        except Exception as e:
+            return f"Focus Mode Error: {e}"
+
+    def get_clipboard_content(self):
+        """Reads the current text in the clipboard."""
+        try:
+            content = pyperclip.paste()
+            if not content:
+                return "Clipboard is empty."
+            return content
+        except Exception as e:
+            return f"Clipboard Error: {e}"
 
 
 # --- EMOTIONAL CORE ---
@@ -309,11 +380,17 @@ class CognitiveEngine:
           * EX: "Google python" -> {{"tool": "web_search", "params": {{"query": "python", "site_name": "google"}}}}
         - set_volume(value_0_to_100)
           * EX: "increase volume to 100%" -> {{"tool": "set_volume", "params": {{"value": 100}}}}
-          * EX: "set volume to 50" -> {{"tool": "set_volume", "params": {{"value": 50}}}}
         - set_brightness(value_0_to_100)
-          * EX: "increase brightness to 100%" -> {{"tool": "set_brightness", "params": {{"value": 100}}}}
-          * EX: "decrease brightness to 20%" -> {{"tool": "set_brightness", "params": {{"value": 20}}}}
-          * EX: "set brightness 75" -> {{"tool": "set_brightness", "params": {{"value": 75}}}}
+        
+        - organize_files(): Moves files in Downloads to Folders (Images, Docs, etc). No params.
+          * EX: "Clean up my downloads" -> {{"tool": "organize_files", "params": {{}}}}
+        
+        - focus_mode(): Kills Discord, Steam, Spotify. No params.
+          * EX: "I need to focus" or "Enable focus mode" -> {{"tool": "focus_mode", "params": {{}}}}
+          
+        - read_clipboard(): Returns clipboard text for analysis. No params.
+          * EX: "What's in my clipboard?" or "Summarize this copied text" -> {{"tool": "read_clipboard", "params": {{}}}}
+
         - check_status()
         - shutdown_pc()
         - none: If chatting.
@@ -357,19 +434,21 @@ def train_model():
     model = LinearRegression()
     model.fit(X, y)
     return model
-```
-
-NEVER write code like this: ```python import numpy as np from sklearn.linear_model import LinearRegression def train_model(): X = np.array([[1, 2], [3, 4]]) y = np.array([1, 2]) model = LinearRegression() model.fit(X, y) return model ```
+NEVER write code like this: python import numpy as np ...
 
 Rules:
-- Each statement on NEW line
-- Proper indentation (4 spaces)
-- Code block starts with ```python (or ```javascript, etc.)
-- Code block ends with ```
+
+Each statement on NEW line
+
+Proper indentation (4 spaces)
+
+Code block starts with python (or javascript, etc.)
+
+Code block ends with ```
 """
-        if len(self.history) > 10: 
+        if len(self.history) > 10:
             self.history.pop(0)
-        
+
         messages = [{"role": "system", "content": sys_prompt}] + self.history + [{"role": "user", "content": user_input}]
         try:
             res = client.chat.completions.create(
