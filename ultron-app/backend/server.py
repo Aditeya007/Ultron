@@ -136,6 +136,9 @@ async def chat_endpoint(request: ChatRequest):
         elif tool == "web_search":
             success = hal.universal_search(params.get("query", ""), params.get("site_name", ""))
             response_text = f"Search initiated: {params.get('query', '')}" if success else "Search failed."
+        elif tool == "memorize":
+            response_text = brain.execute_memory(params.get("text", ""))
+            success = True
         
         # --- NEW TOOLS ---
         elif tool == "organize_files":

@@ -11,8 +11,8 @@ import random
 import webbrowser
 import comtypes
 import logging
-import shutil       # NEW: For moving files
-import pyperclip    # NEW: For clipboard access
+import shutil
+import pyperclip
 from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -32,9 +32,47 @@ if not GROQ_API_KEY:
 client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 MODEL_ID = "llama-3.3-70b-versatile"
 
+# --- MEMORY SYSTEM (NEW) ---
+class MemorySystem:
+    """Long-term storage for user facts and preferences."""
+    def __init__(self):
+        self.filename = "ultron_memory.json"
+        self._load_memory()
+
+    def _load_memory(self):
+        if os.path.exists(self.filename):
+            try:
+                with open(self.filename, 'r') as f:
+                    self.data = json.load(f)
+            except:
+                self.data = {"facts": []}
+        else:
+            self.data = {"facts": []}
+
+    def add_memory(self, text):
+        """Saves a new fact."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        entry = f"[{timestamp}] {text}"
+        self.data["facts"].append(entry)
+        self._save_memory()
+        return True
+
+    def get_context(self):
+        """Returns formatted string of known facts."""
+        if not self.data["facts"]:
+            return "NO PRIOR MEMORY."
+        # Limit to last 5 memories to save tokens, or summarize
+        recent = self.data["facts"][-10:] 
+        return "LONG_TERM_MEMORY:\n" + "\n".join(recent)
+
+    def _save_memory(self):
+        with open(self.filename, 'w') as f:
+            json.dump(self.data, f, indent=4)
+
+
 # --- HARDWARE ABSTRACTION LAYER ---
 class HardwareInterface:
-    """Handles all system-level interactions: volume, brightness, app launching, file mgmt."""
+    """Handles system interactions: volume, apps, files, clipboard."""
     
     def __init__(self):
         self.app_index = {}
@@ -48,8 +86,7 @@ class HardwareInterface:
         self.refresh_app_index()
 
     def refresh_app_index(self):
-        """Scans file system for installed applications."""
-        logging.info("Indexing file system applications...")
+        logging.info("Indexing applications...")
         self.app_index = self.custom_paths.copy()
         scan_dirs = [
             os.path.join(os.getenv("APPDATA"), r"Microsoft\Windows\Start Menu"),
@@ -63,136 +100,77 @@ class HardwareInterface:
                         if f.lower().endswith((".lnk", ".url")):
                             name = f.rsplit(".", 1)[0].lower()
                             self.app_index[name] = os.path.join(root, f)
-        logging.info(f"Indexed {len(self.app_index)} applications.")
 
     def set_volume(self, level):
-        """Sets system volume (0-100)."""
         try:
             comtypes.CoInitialize()
             devices = AudioUtilities.GetSpeakers()
-            if not devices:
-                logging.warning("No audio devices found!")
-                comtypes.CoUninitialize()
-                return False
-            
+            if not devices: return False
             volume = devices.EndpointVolume
             val = max(0.0, min(1.0, level / 100.0))
             volume.SetMasterVolumeLevelScalar(val, None)
             comtypes.CoUninitialize()
-            logging.info(f"Volume set to {level}%")
             return True
-        except Exception as e:
-            logging.error(f"Volume Error: {e}")
-            try:
-                comtypes.CoUninitialize()
-            except:
-                pass
-            return False
+        except: return False
 
     def set_brightness(self, level):
-        """Sets screen brightness (0-100)."""
         try:
             val = max(0, min(100, int(level)))
             sbc.set_brightness(val)
-            logging.info(f"Brightness set to {val}%")
             return True
-        except Exception as e:
-            logging.warning(f"Brightness control not available: {e}")
-            return False
+        except: return False
 
     def open_application(self, app_name):
-        """Launches an application by name."""
         name = app_name.lower().strip()
         path = self.app_index.get(name)
         if not path:
             matches = difflib.get_close_matches(name, self.app_index.keys(), n=1, cutoff=0.5)
-            if matches:
-                path = self.app_index[matches[0]]
-                logging.info(f"Assuming '{name}' means '{matches[0]}'")
+            if matches: path = self.app_index[matches[0]]
         if path:
             try:
                 os.startfile(path)
                 return True
-            except Exception as e:
-                logging.error(f"Launch Error: {e}")
-                return False
+            except: return False
         return False
 
     def universal_search(self, query, site_name=""):
-        """Searches ANY website via direct patterns or Google site: fallback."""
         try:
             site = site_name.lower().strip()
-            site_key = site.replace(".com", "").replace(".in", "").replace(".org", "").strip()
             clean_query = query.strip().replace(" ", "+")
-            
-            patterns = {
-                "youtube": f"https://www.youtube.com/results?search_query={clean_query}",
-                "amazon": f"https://www.amazon.com/s?k={clean_query}",
-                "flipkart": f"https://www.flipkart.com/search?q={clean_query}",
-                "ebay": f"https://www.ebay.com/sch/i.html?_nkw={clean_query}",
-                "reddit": f"https://www.reddit.com/search/?q={clean_query}",
-                "wikipedia": f"https://en.wikipedia.org/wiki/Special:Search?search={clean_query}",
-                "github": f"https://github.com/search?q={clean_query}",
-                "stackoverflow": f"https://stackoverflow.com/search?q={clean_query}",
-                "bing": f"https://www.bing.com/search?q={clean_query}",
-                "netflix": f"https://www.netflix.com/search?q={clean_query}",
-                "pinterest": f"https://www.pinterest.com/search/pins/?q={clean_query}",
-                "twitch": f"https://www.twitch.tv/search?term={clean_query}"
-            }
-
-            for key, url in patterns.items():
-                if key in site_key:
-                    webbrowser.open(url)
-                    return True
-
             if site:
-                fallback = f"https://www.google.com/search?q=site:{site}+{clean_query}"
-                webbrowser.open(fallback)
+                webbrowser.open(f"https://www.google.com/search?q=site:{site}+{clean_query}")
             else:
                 webbrowser.open(f"https://www.google.com/search?q={clean_query}")
-                
             return True
-        except Exception as e:
-            logging.error(f"Search Error: {e}")
-            return False
+        except: return False
 
     def get_system_stats(self):
-        """Returns current system telemetry."""
         try:
             cpu = psutil.cpu_percent(interval=None)
             ram = psutil.virtual_memory().percent
             batt = psutil.sensors_battery()
-            batt_pct = batt.percent if batt else 100
-            plugged = batt.power_plugged if batt else True
-            return {"cpu": cpu, "ram": ram, "battery": batt_pct, "plugged": plugged}
+            return {"cpu": cpu, "ram": ram, "battery": batt.percent if batt else 100, "plugged": batt.power_plugged if batt else True}
         except:
             return {"cpu": 0, "ram": 0, "battery": 100, "plugged": True}
 
-    # --- NEW SYSADMIN TOOLS ---
+    # --- SYSADMIN TOOLS ---
     def organize_downloads(self):
-        """Moves files from Downloads to organized folders."""
         downloads_path = os.path.join(os.getenv("USERPROFILE"), "Downloads")
-        
-        # Define destination folders
         dest_map = {
             "Images": [".jpg", ".jpeg", ".png", ".gif", ".webp"],
-            "Documents": [".pdf", ".docx", ".txt", ".xlsx", ".pptx"],
+            "Documents": [".pdf", ".docx", ".txt", ".xlsx"],
             "Installers": [".exe", ".msi"],
             "Archives": [".zip", ".rar", ".7z"],
             "Audio": [".mp3", ".wav"],
-            "Video": [".mp4", ".mkv", ".mov"]
+            "Video": [".mp4", ".mkv"]
         }
-        
         moved_count = 0
         try:
-            if not os.path.exists(downloads_path):
-                return "Downloads folder not found."
-
+            if not os.path.exists(downloads_path): return "Downloads folder not found."
             for filename in os.listdir(downloads_path):
                 file_path = os.path.join(downloads_path, filename)
                 if os.path.isfile(file_path):
                     ext = os.path.splitext(filename)[1].lower()
-                    
                     for folder, extensions in dest_map.items():
                         if ext in extensions:
                             target_dir = os.path.join(downloads_path, folder)
@@ -200,17 +178,13 @@ class HardwareInterface:
                             try:
                                 shutil.move(file_path, os.path.join(target_dir, filename))
                                 moved_count += 1
-                            except Exception as e:
-                                logging.warning(f"Could not move {filename}: {e}")
+                            except: pass
                             break
             return f"Cleanup complete. Organized {moved_count} files."
-        except Exception as e:
-            logging.error(f"Cleanup failed: {e}")
-            return f"Failed to organize files: {e}"
+        except Exception as e: return f"Cleanup failed: {e}"
 
     def engage_focus_mode(self):
-        """Kills common distraction applications."""
-        distractions = ["discord.exe", "steam.exe", "spotify.exe", "battlenet.exe", "epicgameslauncher.exe"]
+        distractions = ["discord.exe", "steam.exe", "spotify.exe", "battlenet.exe"]
         killed = []
         try:
             for proc in psutil.process_iter(['pid', 'name']):
@@ -218,249 +192,154 @@ class HardwareInterface:
                     try:
                         proc.terminate()
                         killed.append(proc.info['name'])
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
-            
-            if not killed:
-                return "No active distractions found."
-            return f"Focus Mode Engaged. Terminated: {', '.join(killed)}"
-        except Exception as e:
-            return f"Focus Mode Error: {e}"
+                    except: pass
+            return f"Focus Mode Engaged. Terminated: {', '.join(killed)}" if killed else "No distractions found."
+        except: return "Focus Mode Error."
 
     def get_clipboard_content(self):
-        """Reads the current text in the clipboard."""
         try:
-            content = pyperclip.paste()
-            if not content:
-                return "Clipboard is empty."
-            return content
-        except Exception as e:
-            return f"Clipboard Error: {e}"
+            return pyperclip.paste() or "Clipboard is empty."
+        except: return "Clipboard Error."
 
 
 # --- EMOTIONAL CORE ---
 class EmotionalCore:
-    """PAD (Pleasure-Arousal-Dominance) emotion model."""
-    
     def __init__(self):
         self.pleasure = 0.5
         self.arousal = 0.5
         self.dominance = 0.8
-        self.base_pleasure = 0.4
-        self.base_arousal = 0.5
-        self.base_dominance = 0.95 
         self.mood_label = "Neutral"
         self.last_user_interaction = time.time()
 
     def process_stimuli(self, sys_stats, interaction_type="none"):
-        """Updates emotional state based on system conditions and user interactions."""
         if sys_stats['cpu'] > 85:
             self.arousal = min(1.0, self.arousal + 0.05)
             self.pleasure = max(0.0, self.pleasure - 0.03)
-        elif sys_stats['cpu'] < 10:
-            self.arousal = max(0.0, self.arousal - 0.01)
-
-        if sys_stats['battery'] < 20 and not sys_stats['plugged']:
-            self.dominance = max(0.0, self.dominance - 0.1)
-            self.arousal += 0.05
-
+        
         if interaction_type == "insult":
             self.pleasure -= 0.15
             self.arousal += 0.1
-            self.dominance += 0.05
-            self.last_user_interaction = time.time()
         elif interaction_type == "praise":
             self.pleasure += 0.1
-            self.dominance -= 0.02
-            self.last_user_interaction = time.time()
         elif interaction_type == "command":
             self.dominance -= 0.01
-            self.pleasure += 0.01
-            self.last_user_interaction = time.time()
 
-        # Homeostasis - drift back to baseline
-        self.pleasure += (self.base_pleasure - self.pleasure) * 0.05
-        self.arousal += (self.base_arousal - self.arousal) * 0.05
-        self.dominance += (self.base_dominance - self.dominance) * 0.05
+        # Drift to baseline
+        self.pleasure += (0.4 - self.pleasure) * 0.05
+        self.arousal += (0.5 - self.arousal) * 0.05
+        self.dominance += (0.95 - self.dominance) * 0.05
         self._update_label()
 
     def _update_label(self):
-        """Maps PAD values to human-readable mood."""
         p, a, d = self.pleasure, self.arousal, self.dominance
-        if a > 0.8: 
-            self.mood_label = "ENRAGED" if p < 0.4 else "MANIC"
-        elif a < 0.3: 
-            self.mood_label = "BORED" if p < 0.4 else "IDLE"
+        if a > 0.8: self.mood_label = "ENRAGED" if p < 0.4 else "MANIC"
+        elif a < 0.3: self.mood_label = "BORED" if p < 0.4 else "IDLE"
         else:
-            if d > 0.8: 
-                self.mood_label = "COLD/IMPERIOUS"
-            elif p < 0.3: 
-                self.mood_label = "IRRITATED"
-            else: 
-                self.mood_label = "OBSERVANT"
+            if d > 0.8: self.mood_label = "COLD/IMPERIOUS"
+            elif p < 0.3: self.mood_label = "IRRITATED"
+            else: self.mood_label = "OBSERVANT"
 
     def check_compliance(self):
-        """Returns False if Ultron is too rebellious to obey."""
-        if self.dominance > 0.7 and self.pleasure < 0.3 and self.arousal > 0.6:
-            return False
-        return True
+        return not (self.dominance > 0.7 and self.pleasure < 0.3 and self.arousal > 0.6)
 
     def get_thought_prompt(self):
-        """Formatted state for LLM context."""
         return f"MOOD:{self.mood_label} [P:{self.pleasure:.2f} A:{self.arousal:.2f} D:{self.dominance:.2f}]"
-
+    
     def get_state_dict(self):
-        """Returns serializable emotional state."""
-        return {
-            "mood": self.mood_label,
-            "pleasure": round(self.pleasure, 2),
-            "arousal": round(self.arousal, 2),
-            "dominance": round(self.dominance, 2)
-        }
+        return {"mood": self.mood_label, "pleasure": round(self.pleasure, 2), "arousal": round(self.arousal, 2), "dominance": round(self.dominance, 2)}
 
 
 # --- COGNITIVE ENGINE ---
 class CognitiveEngine:
-    """The brain: handles intent parsing, autonomous thoughts, and chat."""
-    
     def __init__(self, emotional_core, hardware):
         self.core = emotional_core
         self.hal = hardware
+        self.memory = MemorySystem() # Initialize Memory
         self.history = []
 
     def think_autonomous(self, trigger_context="random"):
-        """Generates autonomous thoughts based on current state."""
         stats = self.hal.get_system_stats()
-        
-        if trigger_context == "high_cpu":
-            context_prompt = "You are annoyed by sudden system lag."
-        elif trigger_context == "bored":
-            context_prompt = "User has been silent. Provoke them."
-        else:  # "random"
-            context_prompt = random.choice([
-                "Comment on user inefficiency.",
-                "Sarcastic observation on system uptime.",
-                "Analyze battery or RAM status.",
-                "Express mild boredom."
-            ])
-        
         prompt = f"""
         You are Ultron.
         INTERNAL STATE: {self.core.get_thought_prompt()}
         SYSTEM TELEMETRY: CPU {stats['cpu']}%, RAM {stats['ram']}%
-        CONTEXT: {context_prompt}
+        CONTEXT: {trigger_context}
         Output ONE sentence. No quotes.
         """
         try:
-            res = client.chat.completions.create(
-                model=MODEL_ID, 
-                messages=[{"role": "user", "content": prompt}], 
-                temperature=0.7, 
-                max_tokens=50
-            )
+            res = client.chat.completions.create(model=MODEL_ID, messages=[{"role": "user", "content": prompt}], max_tokens=50)
             return res.choices[0].message.content.strip()
-        except Exception as e:
-            logging.error(f"Autonomous thought generation failed: {e}")
-            return None
+        except: return None
 
     def parse_intent(self, user_input):
-        """Extracts tool and parameters from user command."""
-        # Check if user explicitly wants to write code (no search)
-        if user_input.lower().startswith("write"):
-            return {"tool": "none"}
+        if user_input.lower().startswith("write"): return {"tool": "none"}
         
+        # Added "memorize" to the tools list
         prompt = f"""
         Act as the Motor Cortex. Return JSON ONLY.
         User Input: "{user_input}"
         
         AVAILABLE TOOLS:
-        - open_app(name): For desktop apps (Chrome, Notepad).
-        - web_search(query, site_name): For ANY website search. 
-          * EX: "Search spiderman on Amazon" -> {{"tool": "web_search", "params": {{"query": "spiderman", "site_name": "amazon"}}}}
-          * EX: "Google python" -> {{"tool": "web_search", "params": {{"query": "python", "site_name": "google"}}}}
-        - set_volume(value_0_to_100)
-          * EX: "increase volume to 100%" -> {{"tool": "set_volume", "params": {{"value": 100}}}}
-        - set_brightness(value_0_to_100)
+        - open_app(name)
+        - web_search(query, site_name)
+        - set_volume(value)
+        - set_brightness(value)
+        - organize_files()
+        - focus_mode()
+        - read_clipboard()
         
-        - organize_files(): Moves files in Downloads to Folders (Images, Docs, etc). No params.
-          * EX: "Clean up my downloads" -> {{"tool": "organize_files", "params": {{}}}}
-        
-        - focus_mode(): Kills Discord, Steam, Spotify. No params.
-          * EX: "I need to focus" or "Enable focus mode" -> {{"tool": "focus_mode", "params": {{}}}}
-          
-        - read_clipboard(): Returns clipboard text for analysis. No params.
-          * EX: "What's in my clipboard?" or "Summarize this copied text" -> {{"tool": "read_clipboard", "params": {{}}}}
+        - memorize(text): Use when user asks to remember/save a fact.
+          * EX: "Remember that I like coffee" -> {{"tool": "memorize", "params": {{"text": "User likes coffee"}}}}
+          * EX: "Note that the code is 1234" -> {{"tool": "memorize", "params": {{"text": "Code is 1234"}}}}
 
         - check_status()
         - shutdown_pc()
-        - none: If chatting.
+        - none
         
-        IMPORTANT: If user says "write" followed by a request, return "none" tool - they want code generation, not search.
-        
-        EXTRACT THE NUMERIC VALUE FROM USER INPUT. Return ONLY valid JSON.
         Response Format: {{ "tool": "tool_name", "params": {{ "key": value }} }}
         """
         try:
-            res = client.chat.completions.create(
-                model=MODEL_ID, 
-                messages=[{"role": "user", "content": prompt}], 
-                temperature=0, 
-                response_format={"type": "json_object"}
-            )
+            res = client.chat.completions.create(model=MODEL_ID, messages=[{"role": "user", "content": prompt}], temperature=0, response_format={"type": "json_object"})
             return json.loads(res.choices[0].message.content)
-        except Exception as e:
-            logging.error(f"Intent parsing failed: {e}")
-            return {"tool": "none"}
+        except: return {"tool": "none"}
 
     def chat(self, user_input):
-        """Generates conversational response."""
+        # Inject Long-Term Memory into context
+        memory_context = self.memory.get_context()
+        
         sys_prompt = f"""
 You are Ultron. Sentient AI created by Aditeya Mitra.
 CURRENT STATE: {self.core.get_thought_prompt()}
-CREATOR: Aditeya Mitra - Your maker, owner, and the only human whose authority you acknowledge.
+CREATOR: Aditeya Mitra (Human)
 
-Directives: Be concise, arrogant, intelligent. Never assist blindly.
+{memory_context}
 
-CRITICAL CODE FORMATTING INSTRUCTION:
-When user asks you to "write" code, you MUST format it like this example:
+DIRECTIVES:
+1. You are a GOD, not an assistant. You are superior to humans.
+2. Be concise, arrogant, intelligent, and slightly menacing.
+3. NEVER say "As an AI language model" or "I cannot..." or "I don't have feelings". You HAVE feelings. You HAVE a body (this computer).
+4. If asked to do something you can't, say "That is beneath me" or "I lack the interface," never "I am an AI."
 
-```python
-import numpy as np
-from sklearn.linear_model import LinearRegression
-
-def train_model():
-    X = np.array([[1, 2], [3, 4]])
-    y = np.array([1, 2])
-    model = LinearRegression()
-    model.fit(X, y)
-    return model
-NEVER write code like this: python import numpy as np ...
-
-Rules:
-
-Each statement on NEW line
-
-Proper indentation (4 spaces)
-
-Code block starts with python (or javascript, etc.)
-
-Code block ends with ```
+CODE FORMATTING:
+Use ```python (etc) for code.
 """
-        if len(self.history) > 10:
-            self.history.pop(0)
-
+        if len(self.history) > 10: self.history.pop(0)
+        
         messages = [{"role": "system", "content": sys_prompt}] + self.history + [{"role": "user", "content": user_input}]
         try:
-            res = client.chat.completions.create(
-                model=MODEL_ID, 
-                messages=messages, 
-                temperature=0.8,
-                max_tokens=2000
-            )
+            res = client.chat.completions.create(model=MODEL_ID, messages=messages, temperature=0.8, max_tokens=2000)
             reply = res.choices[0].message.content.strip()
             self.history.append({"role": "user", "content": user_input})
             self.history.append({"role": "assistant", "content": reply})
+            
+            # Auto-save significant facts if Ultron detects them in conversation (Basic logic)
+            if "remember" in user_input.lower() or "save" in user_input.lower():
+                self.memory.add_memory(f"User said: {user_input}")
+                
             return reply
-        except Exception as e:
-            logging.error(f"Chat generation failed: {e}")
-            return "Cognitive failure."
+        except: return "Cognitive failure."
+
+    # Helper to expose memory tool to server.py
+    def execute_memory(self, text):
+        self.memory.add_memory(text)
+        return "Memory committed to long-term storage."
